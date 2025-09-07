@@ -1,0 +1,16 @@
+
+services:
+  postgres_db:
+    image: postgres:15-alpine # از ایمیج رسمی و سبک postgres استفاده می‌کنیم
+    container_name: overtime_postgres # یک نام مشخص برای کانتینر
+    environment:
+      POSTGRES_USER: user # نام کاربری برای دیتابیس
+      POSTGRES_PASSWORD: password # رمز عبور برای دیتابیس
+      POSTGRES_DB: overtime_db # نام دیتابیسی که ساخته میشه
+    ports:
+      - "5432:5432" # پورت 5432 سیستم شما رو به پورت 5432 کانتینر وصل می‌کنه
+    volumes:
+      - postgres_data:/var/lib/postgresql/data # این بخش اطلاعات دیتابیس رو ذخیره می‌کنه تا با خاموش شدن کانتینر از بین نره
+
+volumes:
+  postgres_data: # تعریف volume برای پایداری داده‌ها
