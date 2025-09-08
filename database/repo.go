@@ -9,7 +9,7 @@ import (
 type UserRepository interface {
 	CreateUser(ctx context.Context, user *models.User) error
 	GetUserByPersonnelCode(ctx context.Context, code string) (*models.User, error)
-	GetUserByID(ctx context.Context, userID uint) (*models.User, error)
+	GetUserByID(ctx context.Context, userID int64) (*models.User, error)
 }
 
 // OvertimeRepository defines the methods for interacting with overtime data.
@@ -17,7 +17,7 @@ type UserRepository interface {
 type OvertimeRepository interface {
 	CreateOvertimeSlot(ctx context.Context, slot *models.OvertimeSlot) error
 	GetOvertimeSlots(ctx context.Context) ([]models.OvertimeSlot, error)
-	GetAvailableOvertimeSlot(ctx context.Context) ([]models.OvertimeSlot, error)
+	GetAvailableOvertimeSlots(ctx context.Context) ([]models.OvertimeSlot, error)
 	GetOvertimeSlotByID(ctx context.Context, slotID int64) (*models.OvertimeSlot, error)
 	UserHasPendingRequestForSlot(ctx context.Context, userID, slotID int64) (bool, error)
 	CountApprovedRequestsForSlot(ctx context.Context, slotID int64) (int, error)

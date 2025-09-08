@@ -32,10 +32,13 @@ func (r *overtimeRepository) GetOvertimeSlots(ctx context.Context) ([]models.Ove
 	return slots, err
 }
 
-func (r *overtimeRepository) GetAvailableOvertimeSlot(ctx context.Context) ([]models.OvertimeSlot, error) {
+func (r *overtimeRepository) GetAvailableOvertimeSlots(ctx context.Context) ([]models.OvertimeSlot, error) {
 	var slots []models.OvertimeSlot
 	err := r.db.NewSelect().
 		Model(&slots).
+		Relation("Creator", func(q *bun.SelectQuery) *bun.SelectQuery {
+			return q.Column("full_name")
+		}).
 		Where("status = ?", "open").
 		Order("start_time ASC").
 		Scan(ctx)
@@ -67,7 +70,7 @@ func (r *overtimeRepository) CountApprovedRequestsForSlot(ctx context.Context, s
 }
 
 func (r *overtimeRepository) CreateOvertimeRequest(ctx context.Context, req *models.OvertimeRequest) error {
-	_, err := r.db.NewInsert().Model(&req).Exec(ctx)
+	_, err := r.db.NewInsert().Model(req).Exec(ctx)
 	return err
 }
 

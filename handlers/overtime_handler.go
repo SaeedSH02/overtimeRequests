@@ -1,225 +1,145 @@
 package handlers
 
 import (
-	"context"
 	"encoding/csv"
 	"fmt"
 	"net/http"
-	postgres "shiftdony/database"
 	log "shiftdony/logs"
 	"shiftdony/models"
+	"shiftdony/service"
 	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/uptrace/bun"
 	"go.uber.org/zap"
 )
 
 type OvertimeHandler struct {
-	db *postgres.Postgres
+	overtimeService *service.OvertimeService
 }
 
-
-func NewOvertimeHandler(db *postgres.Postgres) *OvertimeHandler {
-	return &OvertimeHandler{db: db}
+func NewOvertimeHandler(overtimeService *service.OvertimeService) *OvertimeHandler {
+	return &OvertimeHandler{overtimeService: overtimeService}
 }
 
 func (h *OvertimeHandler) CreateOvertimeSlot(c *gin.Context) {
 	var input CreateOvertimeInput
+
 	if err := c.ShouldBindJSON(&input); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"success": false,
-			"error":   "Invalid Input",
-			"reason":  "INVALID_INPUT"})
+		SendErrorResponse(c, http.StatusBadRequest, "Invalid input data", "INVALID_INPUT")
 		return
 	}
 
-	creatorID, _ := c.Get("userID")
-	newSlot := models.OvertimeSlot{
-		Title:     input.Title,
-		StartTime: input.StartTime,
-		EndTime:   input.EndTime,
-		Capacity:  int64(input.Capacity),
-		CreatedBy: int64(creatorID.(float64)),
-		Status:    "open",
-	}
-	_, err := h.db.DB().
-		NewInsert().
-		Model(&newSlot).
-		Exec(context.Background())
+	creatorIDVal, _ := c.Get("userID")
+	creatorID := int64(creatorIDVal.(float64))
+
+	newSlot, err := h.overtimeService.CreateSlot(
+		c.Request.Context(),
+		input.Title,
+		input.StartTime,
+		input.EndTime,
+		input.Capacity,
+		creatorID,
+	)
+
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"success": false,
-			"error":   "Failed to create overtime slot",
-			"reason":  "SERVER_ERROR"})
+		SendErrorResponse(c, http.StatusInternalServerError, "Failed to create overtime slot", "SERVER_ERROR")
 		return
 	}
 
-	c.JSON(http.StatusCreated, gin.H{"success": true, "new slot": newSlot})
-
+	SendSuccessResponse(c, http.StatusCreated, newSlot)
 }
 
 func (h *OvertimeHandler) GetOvertimeSlots(c *gin.Context) {
-	var slots []models.OvertimeSlot
+	slots, err := h.overtimeService.GetOvertimeSlots(c.Request.Context())
 
-	err := h.db.DB().
-		NewSelect().
-		Model(&slots).
-		Relation("Creator", func(sq *bun.SelectQuery) *bun.SelectQuery {
-			return sq.Column("full_name")
-		}).
-		Order("start_time DESC").
-		Scan(c.Request.Context())
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"success": false,
-			"error":   "Failed to fetch overtime slots",
-			"reason":  "SERVER_ERROR"})
+		SendErrorResponse(c, http.StatusInternalServerError, "Failed to fetch overtime slots", "SERVER_ERROR")
 		return
 	}
+
 	if slots == nil {
 		slots = make([]models.OvertimeSlot, 0)
 	}
 
-	c.JSON(http.StatusOK, gin.H{"success": true, "slots": slots})
+	responseSlots := make([]SlotResponse, 0, len(slots))
+	for _, slot := range slots {
+		var creatorName string
+		if slot.Creator != nil {
+			creatorName = slot.Creator.FullName
+		}
+
+		responseSlots = append(responseSlots, SlotResponse{
+			ID:        slot.ID,
+			Title:     slot.Title,
+			StartTime: slot.StartTime,
+			EndTime:   slot.EndTime,
+			Capacity:  slot.Capacity,
+			Status:    slot.Status,
+			Creator:   creatorName,
+		})
+	}
+
+	SendSuccessResponse(c, http.StatusOK, responseSlots)
 }
 
-//Get Available OvertimeSlots
-
+// Get Available OvertimeSlots
 func (h *OvertimeHandler) GetAvailableOvertimeSlots(c *gin.Context) {
-	var slots []models.OvertimeSlot
 
-	err := h.db.DB().NewSelect().
-		Model(&slots).
-		Where("status = ?", "open").
-		Order("start_time ASC").
-		Scan(c.Request.Context())
+	slots, err := h.overtimeService.GetAvailableSlots(c.Request.Context())
 
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"success": false,
-			"error":   "Failed to fetch available slots",
-			"reason":  "SERVER_ERROR"})
-		log.Gl.Info("Failed to fetch available slots" + err.Error())
+		SendErrorResponse(c, http.StatusInternalServerError, "Failed to fetch available slots", "SERVER_ERROR")
+		log.Gl.Error("Failed to fetch available slots", zap.Error(err))
 		return
 	}
 	if slots == nil {
 		slots = make([]models.OvertimeSlot, 0)
 	}
 
-	c.JSON(http.StatusOK, gin.H{"success": true, "slots": slots})
+	SendSuccessResponse(c, http.StatusOK, slots)
+
 }
 
 func (h *OvertimeHandler) CreateOvertimeRequest(c *gin.Context) {
 	var input CreateRequestInput
-	// ctx := context.Background()
 	if err := c.ShouldBindJSON(&input); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"success": false,
-			"error":   "Invalid Input",
-			"reason":  "INVALID_INPUT"})
+		SendErrorResponse(c, http.StatusBadRequest, "Invalid inpud data", "INVALID_INPUT")
 		return
 	}
-	userID, _ := c.Get("userID")
-	userID64 := int64(userID.(float64))
+	userIDVal, _ := c.Get("userID")
+	userID := int64(userIDVal.(float64))
 
-	//check Opens shift
-	var slot models.OvertimeSlot
-	err := h.db.DB().
-		NewSelect().Model(&slot).
-		Where("id = ? AND status = ?", input.SlotID, "open").
-		Scan(c.Request.Context())
-	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{
-			"success": false,
-			"error":   "Slot not found or is not open for requests",
-			"reason":  "ALREADY_EXISTS"})
-		return
-	}
+	newRequest, err := h.overtimeService.CreateRequest(c.Request.Context(), userID, input.SlotID)
 
-	// Verify user duplicate shift request
-	exists, err := h.db.DB().NewSelect().
-		Model((*models.OvertimeRequest)(nil)).
-		Where("user_id = ? AND slot_id = ?", userID64, input.SlotID).
-		Exists(c.Request.Context())
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"success": false,
-			"error":   "Failed to fetch overtime slots",
-			"reason":  "SERVER_ERROR"})
-		log.Gl.Info("Database error while checking existing request" + err.Error())
-		return
-	}
-	if exists {
-		c.JSON(http.StatusConflict, gin.H{
-			"success": false,
-			"error":   "You have already applied for this slot",
-			"reason":  "ALREADY_EXISTS"})
+		switch err {
+		case service.ErrSlotNotFound:
+			SendErrorResponse(c, http.StatusNotFound, "Slot not found or is not open for requests", "SLOT_NOT_FOUND")
+		case service.ErrAlreadyApplied:
+			SendErrorResponse(c, http.StatusConflict, "You have already applied for this slot", "ALREADY_APPLIED")
+		case service.ErrSlotIsFull:
+			SendErrorResponse(c, http.StatusConflict, "This overtime slot is already full", "SLOT_FULL")
+		default:
+			SendErrorResponse(c, http.StatusInternalServerError, "Failed to create request", "SERVER_ERROR")
+			log.Gl.Error("Failed to create request", zap.Error(err))
+		}
 		return
 	}
 
-	// Get approved requests count for this overTime
-	approvedCount, err := h.db.DB().NewSelect().
-		Model((*models.OvertimeRequest)(nil)).
-		Where("slot_id = ? AND status = ?", input.SlotID, "approved").
-		Count(c.Request.Context())
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"success": false,
-			"error":   "Internal Server Error",
-			"reason":  "SERVER_ERROR"})
-		log.Gl.Info("Database Error while checking capacity" + err.Error())
-		return
-	}
-	if approvedCount >= int(slot.Capacity) {
-		slot.Status = "full"
-		h.db.DB().NewUpdate().Model(&slot).WherePK().Exec(c.Request.Context())
-		c.JSON(http.StatusConflict, gin.H{
-			"success": false,
-			"error":   "This overtime slot is already full",
-			"reason":  "ALREADY_EXISTS"})
-		return
-	}
-
-	//Make New Req
-	newRequest := models.OvertimeRequest{
-		UserID:      userID64,
-		SlotID:      input.SlotID,
-		Status:      "pending",
-		RequestTime: time.Now(),
-	}
-	_, err = h.db.DB().NewInsert().Model(&newRequest).Exec(c.Request.Context())
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"success": false,
-			"error":   "Failed to creat request",
-			"reason":  "SERVER_ERROR"})
-		log.Gl.Info("Failed to create request" + err.Error())
-		return
-	}
-	c.JSON(http.StatusCreated, gin.H{"success": true, "message": "Request submitted successfully", "request": newRequest})
+	SendSuccessResponse(c, http.StatusOK, newRequest)
 }
 
 // Get My ocertime requests
 func (h *OvertimeHandler) GetMyOvertimeRequests(c *gin.Context) {
-	userID, _ := c.Get("userID")
-	userID64 := int64(userID.(float64))
+	userIDVal, _ := c.Get("userID")
+	userID := int64(userIDVal.(float64))
 
-	var requests []models.OvertimeRequest
-
-	err := h.db.DB().NewSelect().Model(&requests).
-		Where("user_id = ?", userID64).
-		Relation("Slot").
-		Order("request_time DESC").
-		Scan(c.Request.Context())
+	requests, err := h.overtimeService.GetMyRequests(c.Request.Context(), userID)
 
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"success": false,
-			"error":   "Internal Server Error",
-			"reason":  "SERVER_ERROR"})
-		log.Gl.Info("Failed to fetch user requests", zap.Int64("user id:", userID64))
+		SendErrorResponse(c, http.StatusInternalServerError, "Failed to fetch your requests", "SERVER_ERROR")
+		log.Gl.Error("Failed to fetch user requests", zap.Error(err))
 		return
 	}
 
@@ -227,170 +147,75 @@ func (h *OvertimeHandler) GetMyOvertimeRequests(c *gin.Context) {
 		requests = make([]models.OvertimeRequest, 0)
 	}
 
-	c.JSON(http.StatusOK, gin.H{"success": true, "my_request": requests})
+	SendSuccessResponse(c, http.StatusOK, requests)
 }
 
 // Get All overtime Req for Admins
 func (h *OvertimeHandler) GetAllOvertimeRequests(c *gin.Context) {
-	var requests []models.OvertimeRequest
 
-	err := h.db.DB().NewSelect().Model(&requests).
-		Relation("User").
-		Relation("Slot").
-		Order("request_time DESC").
-		Scan(c.Request.Context())
+	requests, err := h.overtimeService.GetAllRequests(c.Request.Context())
+
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"success": false,
-			"error":   "Internal Server Error",
-			"reason":  "SERVER_ERROR"})
-		log.Gl.Error("Failed to fetch requests for admin: ", zap.Error(err))
+		SendErrorResponse(c, http.StatusInternalServerError, "Failed to fetch all requests", "SERVER_ERROR")
+		log.Gl.Error("Failed to fetch all requests", zap.Error(err))
 		return
 	}
-	for i := range requests {
-		if requests[i].User != nil {
-			requests[i].User.PasswordHash = ""
 
-		}
-	}
 	if requests == nil {
 		requests = make([]models.OvertimeRequest, 0)
 	}
 
-	c.JSON(http.StatusOK, gin.H{"success": true, "all_requests": requests})
+	SendSuccessResponse(c, http.StatusOK, requests)
 }
 
 // Update Request Status
 func (h *OvertimeHandler) UpdateOvertimeReqStatus(c *gin.Context) {
+
 	requestID, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"success": false,
-			"error":   "Bad Request",
-			"reason":  "INVALID_INPUT"})
-		log.Gl.Info("bad request detected: ", zap.Error(err))
+		SendErrorResponse(c, http.StatusBadRequest, "Invalid request ID format", "INVALID_INPUT")
 		return
 	}
 	var input UpdateRequestStatusInput
 	if err := c.ShouldBindJSON(&input); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"success": false,
-			"error":   "Bad Request",
-			"reason":  "INVALID_INPUT"})
-		log.Gl.Info("Bad request detected: ", zap.Error(err))
+		SendErrorResponse(c, http.StatusBadRequest, "Invalid input data for status", "INVALID_INPUT")
 		return
 	}
 
-	managerID, exists := c.Get("userID")
-	if !exists || managerID == nil {
-		c.JSON(http.StatusUnauthorized, gin.H{
-			"success": false,
-			"error":   "Internal Server Error",
-			"reason":  "SERVER_ERROR"})
-		log.Gl.Error("managerID not found", zap.Error(err))
-		return
-	}
-	managerID64 := int64(managerID.(float64))
+	managerIDVal, _ := c.Get("userID")
+	managerID := int64(managerIDVal.(float64))
 
-	tx, err := h.db.DB().BeginTx(c, nil)
+	err = h.overtimeService.UpdateRequestStatus(c.Request.Context(), requestID, managerID, input.Status)
+
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"success": false,
-			"error":   "Internal Server Error",
-			"reason":  "SERVER_ERROR"})
-		log.Gl.Error("Failed to start transaction", zap.Int64("Admin Id", managerID64), zap.Error(err))
-		return
-	}
-	defer tx.Rollback() //If an error occurs, all changes will be rolled back
-
-	var request models.OvertimeRequest
-	err = tx.NewSelect().Model(&request).
-		Where("id = ?", requestID).
-		For("UPDATE").
-		Scan(c.Request.Context())
-	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{
-			"success": false,
-			"error":   "Request not found",
-			"reason":  "NOT_FOUND"})
-		log.Gl.Info("Request not found ", zap.Error(err))
-		return
-	}
-	request.Status = input.Status
-	request.ReviewedBy = &managerID64
-	_, err = tx.NewUpdate().Model(&request).WherePK().Exec(c.Request.Context())
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"success": false,
-			"error":   "Internal Server Error",
-			"reason":  "SERVER_ERROR"})
-		log.Gl.Error("Failed to update request status", zap.Int64("Admin Id", managerID64), zap.Error(err))
-		return
-	}
-
-	if input.Status == "approved" {
-		var slot models.OvertimeSlot
-		tx.NewSelect().Model(&slot).Where("id = ?", request.SlotID).Scan(c)
-
-		approvedCount, _ := tx.NewSelect().Model((*models.OvertimeRequest)(nil)).
-			Where("slot_id = ? AND status = ?", request.SlotID, "approved").
-			Count(c)
-
-		if approvedCount >= int(slot.Capacity) {
-			//if capacity is full change status to Full
-			_, err = tx.NewUpdate().Model((*models.OvertimeSlot)(nil)).
-				Set("status = ?", "full").
-				Where("id = ?", request.SlotID).
-				Exec(c)
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{
-					"success": false,
-					"error":   "Internal Server Error",
-					"reason":  "SERVER_ERROR"})
-				log.Gl.Error("Failed to update slot status to full", zap.Int64("Admin Id", managerID64), zap.Error(err))
-				return
-			}
+		if err == service.ErrRequestNotFound {
+			SendErrorResponse(c, http.StatusNotFound, "The requested overtime request was not found", "NOT_FOUND")
+		} else {
+			SendErrorResponse(c, http.StatusInternalServerError, "Failed to update request status", "SERVER_ERROR")
 		}
-	}
-
-	if err := tx.Commit(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"success": false,
-			"error":   "Internal Server Error",
-			"reason":  "SERVER_ERROR"})
-		log.Gl.Error("Failed to commit transaction", zap.Int64("Admin Id", managerID64), zap.Error(err))
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"success": true, "message": "Request status updated successfully"})
+	SendSuccessResponse(c, http.StatusOK, gin.H{
+		"message": "Request status updated successfully",
+	})
 }
 
 // Export Approved Requests As CSV
 func (h *OvertimeHandler) ExportApprovedRequestsAsCSV(c *gin.Context) {
-	var approvedRequests []models.OvertimeRequest
-
-	// Relation("Creator", func(sq *bun.SelectQuery) *bun.SelectQuery {
-	// 	return sq.Column("full_name")
-	// }).
-	err := h.db.DB().NewSelect().
-		Model(&approvedRequests).
-		Relation("User").Relation("Slot").
-		Where("?TableAlias.status = ?", "approved").
-		Order("slot.start_time ASC").
-		Scan(c.Request.Context())
-
+	approvedRequests, err := h.overtimeService.GetApprovedRequests(c.Request.Context())
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"success": false,
-			"error":   "Failed to fetch approved requests",
-			"reason":  "SERVER_ERROR"})
-		log.Gl.Error("Failed to fetch approved requests", zap.Error(err))
+		SendErrorResponse(c, http.StatusInternalServerError, "Failed to fetch approved requests", "SERVER_ERROR")
 		return
 	}
+
 	c.Header("Content-Type", "text/csv")
-	c.Header("Content-Disposition", `attachment; filename="overtime_report.csv"`)
+	c.Header("Content-Disposition", `attachment; filename="approved_requests_report.csv"`)
 
 	writer := csv.NewWriter(c.Writer)
+
+	header := []string{"RequestID", "PersonnelCode", "FullName", "TeamID", "SlotTitle", "StartTime", "EndTime", "ReviewedByManagerID"}
+	writer.Write(header)
 
 	for _, req := range approvedRequests {
 		var managerIDStr string

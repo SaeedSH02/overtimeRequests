@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"os"
 	"shiftdony/config"
 	log "shiftdony/logs"
 	"shiftdony/models"
@@ -41,8 +42,8 @@ func NewPostgres(cfg config.Postgres) (*Postgres, error) {
 	db.AddQueryHook(bunDebug.NewQueryHook(
 		bunDebug.WithVerbose(true),
 		bunDebug.FromEnv("DEBUG"),
+		bunDebug.WithWriter(os.Stdout),
 	))
-
 	return &Postgres{
 		db: db,
 	}, nil

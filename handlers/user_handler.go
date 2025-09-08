@@ -1,163 +1,115 @@
 package handlers
 
 import (
-	"context"
 	"net/http"
-	"time"
 
-	"shiftdony/config"
-	postgres "shiftdony/database"
 	log "shiftdony/logs"
-	"shiftdony/models"
+	"shiftdony/service"
 
 	"github.com/gin-gonic/gin"
-	"github.com/golang-jwt/jwt/v5"
 	"go.uber.org/zap"
-	"golang.org/x/crypto/bcrypt"
 )
 
 type UserHandler struct {
-	db *postgres.Postgres
+	userService *service.UserService
 }
 
-func NewUserHandler(db *postgres.Postgres) *UserHandler {
-	return &UserHandler{db: db}
+func NewUserHandler(userService *service.UserService) *UserHandler {
+	return &UserHandler{userService: userService}
 }
 
 func (h *UserHandler) RegisterUser(c *gin.Context) {
 	var input RegisterInput
 
+	//Read inputs
 	if err := c.ShouldBindJSON(&input); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"success": false,
-			"error":   "Invalid Input",
-			"reason":  "INVALID_INPUT"})
-		log.Gl.Error("Failed to register:", zap.Error(err))
+		SendErrorResponse(c, http.StatusBadRequest, "Invalid input data", "INVALID_INPUT")
 		return
 	}
 
-	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(input.Password), bcrypt.DefaultCost)
+	//Service Call
+	err := h.userService.Register(
+		c.Request.Context(),
+		input.PersonnelCode,
+		input.FullName,
+		input.Password,
+		input.TeamID,
+	)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"success": false,
-			"error":   "Internal server error",
-			"reason":  "SERVER_ERROR"})
-		log.Gl.Error("Failed to hash password", zap.Error(err))
+		if err == service.ErrPersonnelCodeExists {
+			SendErrorResponse(c, http.StatusConflict, "A user with this personnel code already exists", "ALREADY_EXISTS")
+			log.Gl.Info("A user with this personnel code already exists", zap.String("Personnel Code", input.PersonnelCode))
+
+		} else {
+			SendErrorResponse(c, http.StatusInternalServerError, "Failed to register user", "SERVER_ERROR")
+			log.Gl.Error("Failed to register user", zap.Error(err))
+		}
 		return
 	}
 
-	newUser := models.User{
-		PersonnelCode: input.PersonnelCode,
-		FullName:      input.FullName,
-		PasswordHash:  string(hashedPassword),
-		Role:          "user",
-		TeamID:        input.TeamID,
-		WorkHours:     "9-17",
-	}
+	//Success
+	SendSuccessResponse(c, http.StatusCreated, gin.H{
+		"message": "User registered successfully",
+	})
 
-	_, err = h.db.DB().NewInsert().Model(&newUser).Exec(context.Background())
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"success": false,
-			"error":   "Failed to creat user",
-			"reason":  "SERVER_ERROR"})
-		log.Gl.Info("user can't Registred, inputs: ",
-			zap.String("PersonnelCode", newUser.PersonnelCode),
-			zap.String("Passwords", newUser.PasswordHash),
-			zap.String("userName", newUser.FullName))
-		return
-	}
-	log.Gl.Info("user Registred to pannel: ",
-		zap.Int64("userID", newUser.ID),
-		zap.String("PersonnelCode", newUser.PersonnelCode),
-		zap.String("userName", newUser.FullName))
-
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": "User registered successfully"})
 }
 
 func (h *UserHandler) Login(c *gin.Context) {
 	var input LoginInput
+	//Read inputs
 	if err := c.ShouldBindJSON(&input); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid input"})
+		SendErrorResponse(c, http.StatusBadRequest, "Invalid input data", "INVALID_INPUT")
+		log.Gl.Info("Invalid input data for login", zap.String("Personnel Code", input.PersonnelCode))
 		return
 	}
 
-	var user models.User
-	err := h.db.DB().
-		NewSelect().
-		Model(&user).
-		Where("personnel_code = ?", input.PersonnelCode).
-		Scan(context.Background())
+	//Service Call
+	token, err := h.userService.Login(c.Request.Context(), input.PersonnelCode, input.Password)
+
 	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{
-			"success": false,
-			"error":   "Invalid personnel code or password",
-			"reason":  "Unauthorized"})
+		if err == service.ErrInvalidCredentials {
+			SendErrorResponse(c, http.StatusUnauthorized, "Invalid personnel code or password", "INVALID_CREDENTIALS")
+			log.Gl.Info("Invalid personnel code or password", zap.String("Personnel Code", input.PersonnelCode))
+		} else {
+			SendErrorResponse(c, http.StatusInternalServerError, "Could not process login", "SERVER_ERROR")
+			log.Gl.Error("Could not process login", zap.String("Personnel Code", input.PersonnelCode), zap.Error(err))
+		}
 		return
 	}
 
-	err = bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(input.Password))
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{
-			"success": false,
-			"error":   "Invalid personnel code or password",
-			"reason":  "Unauthorized"})
-		return
-	}
-
-	claims := jwt.MapClaims{
-		"sub":  user.ID,
-		"role": user.Role,
-		"exp":  time.Now().Add(time.Hour * 24).Unix(), // Expiration time
-		"iat":  time.Now().Unix(),
-	}
-
-	//Create jwt with HS256
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-
-	tokenString, err := token.SignedString([]byte(config.C.JWT.Secret))
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"success": false,
-			"error":   "Internal Server Error",
-			"reason":  "SERVER_ERROR"})
-		log.Gl.Info("error while making JWT" + err.Error())
-		return
-	}
-
-	log.Gl.Info("user loged to pannel: ", zap.Int64("userID", user.ID),
-		zap.String("userRole", user.Role), zap.String("userName", user.FullName))
-
-	c.JSON(http.StatusOK, gin.H{"success": true, "token": tokenString})
+	//Success
+	SendSuccessResponse(c, http.StatusOK, gin.H{
+		"token": token,
+	})
 }
 
 // Get user profile
 func (h *UserHandler) GetProfile(c *gin.Context) {
-	userID, exists := c.Get("userID")
+	userIDVal, exists := c.Get("userID")
 	if !exists {
-		c.JSON(http.StatusUnauthorized, gin.H{
-			"success": false,
-			"error":   "Internal Server Error",
-			"reason":  "Unauthorized"})
+		SendErrorResponse(c, http.StatusUnauthorized, "User not authenticated", "UNAUTHORIZED")
+		log.Gl.Info("User not authenticated")
 		return
 	}
 
-	var user models.User
-	err := h.db.DB().NewSelect().
-		Model(&user).
-		Where("id = ?", userID).
-		Scan(context.Background())
+	userID, ok := userIDVal.(float64)
+	if !ok {
+		SendErrorResponse(c, http.StatusInternalServerError, "Invalid user ID format in token", "SERVER_ERROR")
+		return
+	}
+
+	userProfile, err := h.userService.GetProfile(c.Request.Context(), int64(userID))
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{
-			"success": false,
-			"error":   "Not Found",
-			"reason":  "NOT_FOUND"})
+		if err == service.ErrUserNotFound {
+			SendErrorResponse(c, http.StatusNotFound, "User profile not found", "NOT_FOUND")
+			log.Gl.Info("User profile not found", zap.Error(err))
+		} else {
+			SendErrorResponse(c, http.StatusInternalServerError, "Could not retrieve profile", "SERVER_ERROR")
+			log.Gl.Error("Could not retrieve profile", zap.Error(err))
+		}
 		return
+
 	}
 
-	user.PasswordHash = ""
-	c.JSON(http.StatusOK, gin.H{"success": true, "profile": user})
-
+	SendSuccessResponse(c, http.StatusOK, userProfile)
 }

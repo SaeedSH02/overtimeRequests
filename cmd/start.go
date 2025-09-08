@@ -43,7 +43,7 @@ func start() {
 	db.Migrate(ctx)
 
 	
-	router := routes.SetupRouter(db) 
+	router := routes.SetupRouter(db.DB()) 
 	if err := router.Run(":8080"); err != nil {
 		log.Gl.Fatal("Failed to run server: " + err.Error())
 	}

@@ -32,20 +32,16 @@ type UpdateRequestStatusInput struct {
 }
 
 
+type SlotResponse struct {
+	ID        int64     `json:"id"`
+	Title     string    `json:"title"`
+	StartTime time.Time `json:"start_time"`
+	EndTime   time.Time `json:"end_time"`
+	Capacity  int64     `json:"capacity"`
+	Status    string    `json:"status"`
+	Creator   string    `json:"creator"` 
+}
 
 
-// SERVER_ERROR
-// CAPTCHA_ERROR
-// INVALID_CREDENTIALS
-// USER_ALREADY_LOGGED_IN
-// TOKEN_GENERATION_FAILED
-// NOT_WHITELISTED
-// USER_ALREADY_EXISTS
-// SIGNED_UP
-// TOKEN_REVOKED
-// INVALID_TOKEN
-// TOKEN_UNVERIFIED
-// NOT_AUTHORIZED
-// INVALID_TOKEN
-// USER_NOT_FOUND
+
 
